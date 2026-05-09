@@ -132,6 +132,7 @@ def parse_args():
     parser.add_argument("--grad-clip", type=float, default=0.25)
     parser.add_argument("--valid-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=2033)
+    parser.add_argument("--split-seed", type=int, default=None)
     parser.add_argument("--amp", action="store_true", default=True)
     parser.add_argument("--no-amp", dest="amp", action="store_false")
     parser.add_argument("--max-unlabel", type=int, default=None)
@@ -153,7 +154,8 @@ def main():
     unlabel_texts = read_unlabel(args.unlabel, args.max_unlabel)
     test_ids, test_texts = read_test(args.test)
     full_train = make_dataset(train_texts, train_labels, word2idx, cfg["seq_len"])
-    train_idx, valid_idx = split_indices(len(full_train), args.valid_ratio, args.seed)
+    split_seed = args.split_seed if args.split_seed is not None else args.seed
+    train_idx, valid_idx = split_indices(len(full_train), args.valid_ratio, split_seed)
     train_data = subset_dataset(full_train, train_idx)
     valid_data = subset_dataset(full_train, valid_idx)
     unlabel_data = make_dataset(unlabel_texts, None, word2idx, cfg["seq_len"])
@@ -199,7 +201,7 @@ def main():
         total_correct = 0
         total = 0
         unlabeled_iter = itertools.cycle(iter(unlabel_batcher))
-        for batch in train_batcher:
+        for step, batch in enumerate(train_batcher, 1):
             x, lengths, labels = [item.to(device, non_blocking=True) for item in batch]
             ux, ulengths = [item.to(device, non_blocking=True) for item in next(unlabeled_iter)]
             targets = labels * (1 - 2 * args.label_smoothing) + args.label_smoothing
@@ -220,6 +222,11 @@ def main():
                 total_correct += (pred == labels).sum().item()
                 total += labels.numel()
                 total_loss += loss.item() * labels.numel()
+            if step % 50 == 0:
+                print(
+                    f"vat epoch {epoch:02d} step {step}/{len(train_batcher)} "
+                    f"loss={total_loss/max(1,total):.5f}"
+                )
         valid_batcher = BucketBatcher(valid_data, args.batch_size, False, args.seed)
         val_loss, val_acc = evaluate_classifier(model, valid_batcher, device)
         cal_acc, cal_th = calibrate(model, valid_data, args.batch_size, device)
